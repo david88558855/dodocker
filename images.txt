@@ -1,2 +1,3 @@
 snowdreamtech/frpc:latest
 ghcr.io/wg-easy/wg-easy:latest
+ghcr.io/element-hq/synapse:latest
