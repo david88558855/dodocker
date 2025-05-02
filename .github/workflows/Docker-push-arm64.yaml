@@ -1,4 +1,4 @@
-name: Docker-push-arm64
+name: Mirror Docker Images
 
 on:
   workflow_dispatch:
@@ -22,40 +22,59 @@ env:
   DOCKER_REGISTRY_PASSWORD: "${{ secrets.DOCKER_REGISTRY_PASSWORD }}"
 
 jobs:
-
-  build:
-    name: Pull
+  mirror-images:
+    name: Mirror Docker Images
     runs-on: ubuntu-latest
+
     steps:
-    - name: Docker Setup Buildx
-      uses: docker/setup-buildx-action@v3
+      # 检出仓库内容
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      # 登录到 Docker 仓库
+      - name: Login to Docker Registry
+        env:
+          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+          DOCKER_REGISTRY_USER: ${{ secrets.DOCKER_REGISTRY_USER }}
+          DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+        run: |
+          echo "${DOCKER_REGISTRY_PASSWORD}" | docker login "${DOCKER_REGISTRY}" -u "${DOCKER_REGISTRY_USER}" --password-stdin
 
-    - name: Build and push image
-      run: |
-        docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $DOCKER_REGISTRY
-        while IFS= read -r line; do
-          [[ -z "$line" ]] && continue
-          echo "docker pull $line"
-          docker pull $line
-          platform=$(echo "$line" | awk -F'--platform[ =]' '{if (NF>1) print $2}' | awk '{print $1}')
-          echo "platform is $platform"
-          # 如果存在架构信息 将架构信息拼到TAG名称之后
-          if [ -z "$platform" ]; then
-              platform_prefix=""
-          else
-              platform_prefix="_${platform//\//_}"
+      # 读取并处理镜像列表
+      - name: Process image list
+        env:
+          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+          DOCKER_NAMESPACE: ${{ secrets.DOCKER_NAMESPACE }}
+        run: |
+          # 检查 images.txt 文件是否存在
+          if [[ ! -f "images.txt" ]]; then
+            echo "Error: images.txt file not found!"
+            exit 1
           fi
-          echo "platform_prefix is $platform_prefix"
-          # 获取镜像的完整名称，例如kasmweb/nginx:1.25.3（命名空间/镜像名:版本号）
-          image=$(echo "$line" | awk '{print $NF}')
-          # 获取 镜像名:版本号  例如nginx:1.25.3
-          image_name=$(echo "$image" | awk -F'[/:]' '{print $(NF-1)}')
-          new_image="$DOCKER_REGISTRY/$DOCKER_NAME_SPACE/$image_name:arm64"
-          echo "docker tag $image $new_image"
-          docker tag $image $new_image
-          echo "docker push $new_image"
-          docker push $new_image
-        done < images-arm64.txt
+
+          # 按行读取镜像列表并处理
+          while IFS= read -r SOURCE_IMAGE; do
+            # 忽略空行
+            if [[ -z "$SOURCE_IMAGE" ]]; then
+              continue
+            fi
+
+            # 构造目标镜像名称
+            TARGET_IMAGE="${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/$(basename "$SOURCE_IMAGE")"
+
+            echo "========================================="
+            echo "Processing source image: $SOURCE_IMAGE"
+            echo "Target image: $TARGET_IMAGE"
+
+            # 拉取源镜像，指定平台为 linux/arm64
+            docker pull --platform=linux/arm64 "$SOURCE_IMAGE"
+
+            # 重命名镜像到目标仓库
+            docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+
+            # 推送镜像到目标仓库
+            docker push "$TARGET_IMAGE"
+
+            echo "Successfully mirrored: $SOURCE_IMAGE -> $TARGET_IMAGE"
+            echo "========================================="
+          done < images.txt
