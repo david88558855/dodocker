@@ -1,80 +1,75 @@
-name: Mirror Docker Images
+name: Rename and Push Docker Images to ARM64
 
 on:
-  workflow_dispatch:
-    inputs:
-      name:
-        description: '请填写Docker仓库名称，默认仓库david88558855/Docker-clone'
-        required: true
-        default: 'david88558855/Docker-clone'
-      tag:
-        description: '请填写仓库的分支或提交记录，默认主分支master'
-        required: true
-        default: 'master'
-  workflow_run:
-    workflows: ["Docker-push-x64"]
-    types:
-      - completed
+  push:
+    branches:
+      - main  # 在推送到 main 分支时触发
+  workflow_dispatch:  # 手动触发工作流
+
 env:
-  DOCKER_REGISTRY: "${{ secrets.DOCKER_REGISTRY }}"
-  DOCKER_NAME_SPACE: "${{ secrets.DOCKER_NAME_SPACE }}"
-  DOCKER_REGISTRY_USER: "${{ secrets.DOCKER_REGISTRY_USER }}"
-  DOCKER_REGISTRY_PASSWORD: "${{ secrets.DOCKER_REGISTRY_PASSWORD }}"
+  DOCKER_REGISTRY: docker.io  # 目标 Docker Registry
+  DOCKER_NAMESPACE: haoxuan8855    # 目标镜像命名空间
 
 jobs:
-  mirror-images:
-    name: Mirror Docker Images
+  process-images:
     runs-on: ubuntu-latest
 
     steps:
-      # 检出仓库内容
+      # Step 1: 检出代码
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 登录到 Docker 仓库
-      - name: Login to Docker Registry
-        env:
-          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
-          DOCKER_REGISTRY_USER: ${{ secrets.DOCKER_REGISTRY_USER }}
-          DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
-        run: |
-          echo "${DOCKER_REGISTRY_PASSWORD}" | docker login "${DOCKER_REGISTRY}" -u "${DOCKER_REGISTRY_USER}" --password-stdin
+      # Step 2: 登录 Docker
+      - name: Log in to Docker Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}  # 在 GitHub Secrets 中设置
+          password: ${{ secrets.DOCKER_PASSWORD }}  # 在 GitHub Secrets 中设置
 
-      # 读取并处理镜像列表
-      - name: Process image list
-        env:
-          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
-          DOCKER_NAMESPACE: ${{ secrets.DOCKER_NAMESPACE }}
+      # Step 3: 处理镜像列表
+      - name: Process images from images.txt
         run: |
           # 检查 images.txt 文件是否存在
           if [[ ! -f "images.txt" ]]; then
-            echo "Error: images.txt file not found!"
+            echo "Error: images.txt file not found in the repository root!"
             exit 1
           fi
 
-          # 按行读取镜像列表并处理
+          echo "Found images.txt file. Begin processing..."
+
+          # 逐行读取文件内容并处理每个镜像
           while IFS= read -r SOURCE_IMAGE; do
-            # 忽略空行
-            if [[ -z "$SOURCE_IMAGE" ]]; then
+            # 跳过空行或无效行
+            if [[ -z "$SOURCE_IMAGE" || "${SOURCE_IMAGE:0:1}" == "#" ]]; then
               continue
             fi
 
-            # 构造目标镜像名称
-            TARGET_IMAGE="${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/$(basename "$SOURCE_IMAGE")"
+            # 分离镜像的基础名称
+            IMAGE_NAME=$(echo "$SOURCE_IMAGE" | cut -d':' -f1)  # 提取镜像名称（忽略标签）
 
+            # 构造目标镜像名称，固定标签为 `arm64`
+            TARGET_IMAGE="${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/$(basename "$IMAGE_NAME"):arm64"
+
+            # 输出处理信息
             echo "========================================="
             echo "Processing source image: $SOURCE_IMAGE"
             echo "Target image: $TARGET_IMAGE"
 
             # 拉取源镜像，指定平台为 linux/arm64
-            docker pull --platform=linux/arm64 "$SOURCE_IMAGE"
+            if ! docker pull --platform=linux/arm64 "$SOURCE_IMAGE"; then
+              echo "Error: Failed to pull image $SOURCE_IMAGE. Skipping..."
+              continue
+            fi
 
             # 重命名镜像到目标仓库
             docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
 
             # 推送镜像到目标仓库
-            docker push "$TARGET_IMAGE"
-
-            echo "Successfully mirrored: $SOURCE_IMAGE -> $TARGET_IMAGE"
+            if docker push "$TARGET_IMAGE"; then
+              echo "Successfully mirrored: $SOURCE_IMAGE -> $TARGET_IMAGE"
+            else
+              echo "Error: Failed to push image $TARGET_IMAGE. Skipping..."
+            fi
             echo "========================================="
           done < images.txt
